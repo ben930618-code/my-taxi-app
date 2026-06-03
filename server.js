@@ -36,7 +36,7 @@ app.get('/admin', (req, res) => {
             <div id="log" style="background:#eee; padding:10px; min-height:100px; border-radius:5px;">等待派單...</div>
             <script src="/socket.io/socket.io.js"></script>
             <script>
-                const socket = io();
+                const socket = io({ transports: ['polling', 'websocket'] });
                 function sendOrder() {
                     document.getElementById('log').innerText = "處理中...";
                     fetch('/api/dispatch', {
@@ -85,7 +85,7 @@ app.get('/driver', (req, res) => {
 
             <script src="/socket.io/socket.io.js"></script>
             <script>
-                const socket = io();
+                const socket = io({ transports: ['polling', 'websocket'] });
                 let isOnline = false;
                 let watchId = null;
 
