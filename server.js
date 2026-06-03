@@ -4,11 +4,25 @@ const socketIo = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+const io = socketIo(server, {
+    // 解決兩台手機同時連線、或行動網路容易斷線的優化設定
+    transports: ['polling', 'websocket'],
+    pingTimeout: 60000,
+    pingInterval: 25000
+});
 
 app.use(express.json());
 
-// 這裡改成動態資料庫：只紀錄「目前點擊上線」的真實司機
+// ─── 🔑 管理者專屬：司機帳號密碼名冊 ───
+// 你可以在這裡自由增加、修改或刪除合法的司機。
+// 格式： '車牌號碼': { name: '司機稱呼', phone: '手機號碼' }
+const driverRegistry = {
+    'BNH-2950': { name: '曾成竣', phone: '0930548588' },
+    'EBA-9369': { name: '曾開正', phone: '0955298588' },
+    'TAXI-999': { name: '司機03', phone: '0900111222' }
+};
+
+// 儲存目前「在線上」的真實司機動態資料
 let activeDrivers = {}; 
 
 function getDistance(lat1, lon1, lat2, lon2) {
@@ -20,7 +34,7 @@ function getDistance(lat1, lon1, lat2, lon2) {
     return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))); 
 }
 
-// ─── 管理者網頁 ───
+// ─── 🚨 管理者網頁 ───
 app.get('/admin', (req, res) => {
     res.send(`
         <!DOCTYPE html>
@@ -31,9 +45,9 @@ app.get('/admin', (req, res) => {
             地址: <input type="text" id="addr" value="桃園市桃園區中正路1號" style="width:100%; padding:8px; margin-bottom:10px;"><br>
             緯度: <input type="number" id="lat" value="24.9936" step="0.0001" style="width:100%; padding:8px; margin-bottom:10px;"><br>
             經度: <input type="number" id="lng" value="121.3130" step="0.0001" style="width:100%; padding:8px; margin-bottom:20px;"><br>
-            <button onclick="sendOrder()" style="width:100%; padding:12px; background:blue; color:white; border:none; font-size:16px;">確認派車 (找最近2位線上司機)</button>
+            <button onclick="sendOrder()" style="width:100%; padding:12px; background:blue; color:white; border:none; font-size:16px; font-weight:bold; border-radius:5px;">確認派車 (找最近2位線上司機)</button>
             <h3 style="margin-top:30px;">📡 派單動態監聽：</h3>
-            <div id="log" style="background:#eee; padding:10px; min-height:100px; border-radius:5px;">等待派單...</div>
+            <div id="log" style="background:#eee; padding:10px; min-height:100px; border-radius:5px; font-family:monospace;">等待派單...</div>
             <script src="/socket.io/socket.io.js"></script>
             <script>
                 const socket = io({ transports: ['polling', 'websocket'] });
@@ -58,86 +72,156 @@ app.get('/admin', (req, res) => {
     `);
 });
 
-// ─── 司機端網頁（含手機定位與上下線按鈕） ───
+// ─── 🚖 司機端網頁（升級版：含車牌電話登入、背景自動重連） ───
 app.get('/driver', (req, res) => {
     res.send(`
         <!DOCTYPE html>
         <html>
         <head><title>司機端系統</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
         <body style="font-family:sans-serif; padding:20px; max-width:500px; margin:auto; text-align:center;">
-            <h2>🚖 司機工作台</h2>
-<div style="margin:10px 0;">
-    司機代號: <input type="text" id="driverId" value="司機01" style="padding:5px; font-size:16px; width:100px;">
-</div>
-<div style="margin:10px 0;">
-    驗證 PIN 碼: <input type="password" id="pinCode" placeholder="請輸入4位數密碼" style="padding:5px; font-size:16px; width:120px; text-align:center;">
-</div>
+            <h2>🚖 司機工作台系統</h2>
             
-            <button id="toggleBtn" onclick="toggleStatus()" style="padding:10px 20px; font-size:16px; background:green; color:white; border:none; border-radius:5px; width:80%; margin:10px 0;">開啟上班 (開始定位)</button>
+            <div id="loginSection" style="background:#f8f9fa; padding:20px; border-radius:10px; border:1px solid #ddd; margin-bottom:20px;">
+                <h3 style="margin-top:0;">🔐 司機身分驗證</h3>
+                <div style="margin:10px 0; text-align:left;">
+                    <label><b>車牌號碼 (帳號):</b></label>
+                    <input type="text" id="plateNum" placeholder="例: ABC-1234" style="width:100%; padding:8px; box-sizing:border-box; margin-top:5px; font-size:16px;">
+                </div>
+                <div style="margin:15px 0; text-align:left;">
+                    <label><b>手機號碼 (密碼):</b></label>
+                    <input type="password" id="phoneNum" placeholder="請輸入您的電話號碼" style="width:100%; padding:8px; box-sizing:border-box; margin-top:5px; font-size:16px;">
+                </div>
+                <button id="toggleBtn" onclick="toggleStatus()" style="padding:12px; font-size:16px; font-weight:bold; background:green; color:white; border:none; border-radius:5px; width:100%; margin-top:10px;">驗證並開啟上班</button>
+            </div>
             
             <hr>
-            <div id="status" style="font-size:18px; color:gray; margin:20px;">🔴 目前下班中 (未定位)</div>
+            <div id="status" style="font-size:18px; color:gray; margin:20px; font-weight:bold;">🔴 目前下班中 (未定位)</div>
             <div id="gpsDebug" style="font-size:12px; color:gray;"></div>
 
-            <div id="pop" style="display:none; background:#fff3cd; border:2px solid #ffecb5; padding:20px; border-radius:10px; margin-top:20px;">
+            <div id="pop" style="display:none; background:#fff3cd; border:2px solid #ffecb5; padding:20px; border-radius:10px; margin-top:20px; box-shadow: 0px 4px 10px rgba(0,0,0,0.1);">
                 <h3 style="color:#856404; margin-top:0;">🚨 收到新派單通知！</h3>
-                <p id="addrText"></p>
+                <p id="addrText" style="font-size:18px; font-weight:bold;"></p>
                 <p style="color:red; font-weight:bold;">⏰ 請在 2 分鐘內完成搶單！</p>
-                <button id="acceptBtn" style="padding:12px 30px; background:green; color:white; border:none; font-size:18px; font-weight:bold; border-radius:5px; width:100%;">立刻接單 (搶)</button>
+                <button id="acceptBtn" style="padding:14px 30px; background:green; color:white; border:none; font-size:18px; font-weight:bold; border-radius:5px; width:100%;">立刻接單 (搶)</button>
             </div>
 
             <script src="/socket.io/socket.io.js"></script>
             <script>
-                const socket = io({ transports: ['polling', 'websocket'] });
+                // 開啟長輪詢機制，大幅減少斷線機率
+                const socket = io({ 
+                    transports: ['polling', 'websocket'],
+                    autoConnect: true,
+                    reconnection: true,
+                    reconnectionAttempts: Infinity,
+                    reconnectionDelay: 1000
+                });
+
                 let isOnline = false;
                 let watchId = null;
+                let currentLat = 0;
+                let currentLng = 0;
 
-                // 上下線開關邏輯
+                // 🌟 當手機從後台切回前台時，強迫立刻更新並補發定位
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'visible' && isOnline) {
+                        console.log('司機回到網頁，補發定位快取...');
+                        sendLocationUpdate();
+                    }
+                });
+
+                // 斷線自動重連成功時，自動把上班狀態補回去給大腦
+                socket.on('connect', () => {
+                    if (isOnline) {
+                        console.log('網路重連成功，自動恢復線上身分');
+                        sendLocationUpdate();
+                    }
+                });
+
+                // 處理登入失敗的回覆
+                socket.on('login_failed', (data) => {
+                    alert("❌ 登入失敗：" + data.message);
+                    resetToOfflineInfo();
+                });
+
+                function sendLocationUpdate() {
+                    const pNum = document.getElementById('plateNum').value.trim();
+                    const pwd = document.getElementById('phoneNum').value.trim();
+                    if (pNum && currentLat && currentLng) {
+                        socket.emit('driver_location_update', { 
+                            plateNumber: pNum, 
+                            phoneNumber: pwd, 
+                            lat: currentLat, 
+                            lng: currentLng 
+                        });
+                    }
+                }
+
                 function toggleStatus() {
-    const dId = document.getElementById('driverId').value;
-    const btn = document.getElementById('toggleBtn');
-    const statusText = document.getElementById('status');
-    const inputPin = document.getElementById('pinCode').value;
+                    const pNum = document.getElementById('plateNum').value.trim();
+                    const pwd = document.getElementById('phoneNum').value.trim();
+                    const btn = document.getElementById('toggleBtn');
+                    const statusText = document.getElementById('status');
 
-    if (!isOnline) {
-        // 🚨 密碼檢查門神：如果密碼不是 8888，就直接攔截！
-        if (inputPin !== "8888") {
-            alert("❌ PIN 碼錯誤！您沒有權限登入司機系統。");
-            return; // 密碼錯了，直接結束，不給連線、不抓 GPS！
-        }
+                    if (!pNum || !pwd) {
+                        alert("請完整輸入車牌號碼與手機號碼！");
+                        return;
+                    }
 
-        // 密碼正確才繼續往下走原本的上班流程
-                        // 【開啟定位】請求手機瀏覽器允許 GPS 定位權限
+                    if (!isOnline) {
                         if (navigator.geolocation) {
-                            isOnline = true;
-                            btn.innerText = "關閉下班 (停止定位)";
-                            btn.style.background = "red";
-                            statusText.innerText = "🟢 線上候客中 (GPS持續更新)...";
-                            statusText.style.color = "green";
+                            // 先抓一次定位，成功才進行上班登入
+                            navigator.geolocation.getCurrentPosition((position) => {
+                                isOnline = true;
+                                btn.innerText = "關閉下班 (停止定位)";
+                                btn.style.background = "red";
+                                statusText.innerText = "🟢 線上候客中 (防斷線守護中)...";
+                                statusText.style.color = "green";
+                                
+                                // 鎖定輸入框，上班中不能亂改帳密
+                                document.getElementById('plateNum').disabled = true;
+                                document.getElementById('phoneNum').disabled = true;
 
-                            // 每當司機位置改變，自動回傳經緯度給大腦
-                            watchId = navigator.geolocation.watchPosition((position) => {
-                                let lat = position.coords.latitude;
-                                let lng = position.coords.longitude;
-                                document.getElementById('gpsDebug').innerText = "目前手機GPS: " + lat.toFixed(4) + ", " + lng.toFixed(4);
-                                socket.emit('driver_location_update', { driverId: dId, lat: lat, lng: lng });
+                                currentLat = position.coords.latitude;
+                                currentLng = position.coords.longitude;
+                                document.getElementById('gpsDebug').innerText = "目前手機GPS: " + currentLat.toFixed(4) + ", " + currentLng.toFixed(4);
+                                
+                                // 發送登入與定位更新
+                                sendLocationUpdate();
+
+                                // 持續追蹤
+                                watchId = navigator.geolocation.watchPosition((pos) => {
+                                    currentLat = pos.coords.latitude;
+                                    currentLng = pos.coords.longitude;
+                                    document.getElementById('gpsDebug').innerText = "目前手機GPS: " + currentLat.toFixed(4) + ", " + currentLng.toFixed(4);
+                                    sendLocationUpdate();
+                                }, null, { enableHighAccuracy: true });
+
                             }, (err) => {
-                                alert("請允許手機瀏覽器獲取 GPS 定位權限！");
+                                alert("請允許手機瀏覽器獲取 GPS 定位權限，否則無法上班！");
                             }, { enableHighAccuracy: true });
                         } else {
                             alert("您的手機不支援 GPS 定位");
                         }
                     } else {
-                        // 【關閉定位】
-                        isOnline = false;
-                        btn.innerText = "開啟上班 (開始定位)";
-                        btn.style.background = "green";
-                        statusText.innerText = "🔴 目前下班中 (未定位)";
-                        statusText.style.color = "gray";
-                        document.getElementById('gpsDebug').innerText = "";
-                        if (watchId) navigator.geolocation.clearWatch(watchId);
-                        socket.emit('driver_offline', { driverId: dId });
+                        // 點擊下班
+                        const dId = document.getElementById('plateNum').value.trim();
+                        socket.emit('driver_offline', { plateNumber: dId });
+                        resetToOfflineInfo();
                     }
+                }
+
+                function resetToOfflineInfo() {
+                    isOnline = false;
+                    const btn = document.getElementById('toggleBtn');
+                    const statusText = document.getElementById('status');
+                    btn.innerText = "驗證並開啟上班";
+                    btn.style.background = "green";
+                    statusText.innerText = "🔴 目前下班中 (未定位)";
+                    statusText.style.color = "gray";
+                    document.getElementById('gpsDebug').innerText = "";
+                    document.getElementById('plateNum').disabled = false;
+                    document.getElementById('phoneNum').disabled = false;
+                    if (watchId) navigator.geolocation.clearWatch(watchId);
                 }
 
                 socket.on('new_order_request', (data) => {
@@ -145,10 +229,10 @@ app.get('/driver', (req, res) => {
                     document.getElementById('pop').style.display = "block";
                     
                     document.getElementById('acceptBtn').onclick = function() {
-                        const dId = document.getElementById('driverId').value;
+                        const pNum = document.getElementById('plateNum').value.trim();
                         socket.emit('accept_order', {
                             orderId: data.orderId,
-                            driverId: dId,
+                            plateNumber: pNum,
                             targetLat: data.lat,
                             targetLng: data.lng
                         });
@@ -158,8 +242,8 @@ app.get('/driver', (req, res) => {
                 socket.on('accept_result', (data) => {
                     if(data.success) {
                         document.getElementById('pop').style.display = "none";
-                        // 【跳轉至 Google Maps App 開始導航】
-                        window.location.href = "https://www.google.com/maps/search/?api=1&query=" + data.lat + "," + data.lng;
+                        // 🎉 修正後的標準 Google Map 導航跳轉格式
+                        window.location.href = "https://www.google.com/maps/dir/?api=1&destination=" + data.lat + "," + data.lng;
                     } else {
                         alert(data.message);
                         document.getElementById('pop').style.display = "none";
@@ -177,7 +261,6 @@ let currentActiveOrder = null;
 app.post('/api/dispatch', (req, res) => {
     const { targetAddress, targetLat, targetLng } = req.body;
     
-    // 將目前「在線上的真實司機」拿出來計算距離
     let driversArray = Object.values(activeDrivers);
     let sortedDrivers = driversArray.map(driver => {
         return { ...driver, distance: getDistance(targetLat, targetLng, driver.lat, driver.lng) };
@@ -209,44 +292,69 @@ app.post('/api/dispatch', (req, res) => {
 });
 
 io.on('connection', (socket) => {
-    // 司機定位更新
+    
+    // 司機身分驗證與定位更新
     socket.on('driver_location_update', (data) => {
-        activeDrivers[data.driverId] = {
-            id: data.driverId,
+        const pNum = data.plateNumber;
+        const pPwd = data.phoneNumber;
+
+        // 🛡️ 檢查名冊中是否有這台車，且電話是否正確
+        const registeredDriver = driverRegistry[pNum];
+        if (!registeredDriver || registeredDriver.phone !== pPwd) {
+            socket.emit('login_failed', { message: "車牌號碼不存在，或是手機號碼不正確！" });
+            return;
+        }
+
+        // 驗證成功，寫入線上名單
+        activeDrivers[pNum] = {
+            id: pNum,
+            name: registeredDriver.name,
             lat: data.lat,
             lng: data.lng,
-            socketId: socket.id
+            socketId: socket.id // 每次重連會自動更新這個小門牌，防止斷線收不到派單
         };
-        console.log(`[定位更新] 司機: \${data.driverId} 座標: \${data.lat}, \${data.lng}`);
+        console.log(`[認證成功] 司機: ${registeredDriver.name} (${pNum}) 座標: ${data.lat}, ${data.lng}`);
     });
 
-    // 司機下線
+    // 司機主動下線
     socket.on('driver_offline', (data) => {
-        delete activeDrivers[data.driverId];
-        console.log(`[下線] 司機: \${data.driverId}`);
+        delete activeDrivers[data.plateNumber];
+        console.log(`[主動下線] 車牌: ${data.plateNumber}`);
     });
 
+    // 處理搶單
     socket.on('accept_order', (data) => {
+        const driverInfo = activeDrivers[data.plateNumber];
+        const driverDisplayName = driverInfo ? `${driverInfo.name} (${data.plateNumber})` : data.plateNumber;
+
         if (currentActiveOrder && currentActiveOrder.orderId === data.orderId && !currentActiveOrder.isAccepted) {
             currentActiveOrder.isAccepted = true;
             socket.emit('accept_result', { success: true, lat: currentActiveOrder.lat, lng: currentActiveOrder.lng });
-            io.emit('admin_notification', { status: "SUCCESS", message: "司機 " + data.driverId + " 已成功搶單！" });
+            
+            // 🌟 使用 + 號拼接，完美秀出真實車牌與名字！
+            io.emit('admin_notification', { status: "SUCCESS", message: "司機 " + driverDisplayName + " 已成功搶單！" });
         } else {
             socket.emit('accept_result', { success: false, message: "單已被搶走或已逾時。" });
         }
     });
 
     socket.on('disconnect', () => {
-        // 斷線自動清除
-        for (let id in activeDrivers) {
-            if (activeDrivers[id].socketId === socket.id) {
-                delete activeDrivers[id];
-                console.log("[斷線下線] 司機: " + id);
+        // 斷線時，不要立刻刪除司機！給予網頁切到後台重連的寬限緩衝
+        setTimeout(() => {
+            for (let pNum in activeDrivers) {
+                if (activeDrivers[pNum].socketId === socket.id) {
+                    // 檢查這台車在過去幾秒內有沒有透過新 socket 重連回來，如果沒有，才判定為真正下線
+                    if (activeDrivers[pNum].socketId === socket.id) {
+                        delete activeDrivers[pNum];
+                        console.log(`[完全斷線] 車牌: ${pNum}`);
+                    }
+                }
             }
-        }
+        }, 8000); // 8秒緩衝，足夠讓切換 App 的司機自動連回來
     });
 });
 
+// 監聽環境變數
 server.listen(process.env.PORT || 3000, () => {
-    console.log('\n🚀 全球定位版派車大腦已啟動！Port: 3000');
+    console.log('\n🚀 權限與防斷線升級版派車大腦已啟動！');
 });
