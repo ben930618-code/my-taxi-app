@@ -66,9 +66,12 @@ app.get('/driver', (req, res) => {
         <head><title>司機端系統</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
         <body style="font-family:sans-serif; padding:20px; max-width:500px; margin:auto; text-align:center;">
             <h2>🚖 司機工作台</h2>
-            <div style="margin:10px 0;">
-                司機代號: <input type="text" id="driverId" value="司機01" style="padding:5px; font-size:16px; width:100px;">
-            </div>
+<div style="margin:10px 0;">
+    司機代號: <input type="text" id="driverId" value="司機01" style="padding:5px; font-size:16px; width:100px;">
+</div>
+<div style="margin:10px 0;">
+    驗證 PIN 碼: <input type="password" id="pinCode" placeholder="請輸入4位數密碼" style="padding:5px; font-size:16px; width:120px; text-align:center;">
+</div>
             
             <button id="toggleBtn" onclick="toggleStatus()" style="padding:10px 20px; font-size:16px; background:green; color:white; border:none; border-radius:5px; width:80%; margin:10px 0;">開啟上班 (開始定位)</button>
             
@@ -91,11 +94,19 @@ app.get('/driver', (req, res) => {
 
                 // 上下線開關邏輯
                 function toggleStatus() {
-                    const dId = document.getElementById('driverId').value;
-                    const btn = document.getElementById('toggleBtn');
-                    const statusText = document.getElementById('status');
+    const dId = document.getElementById('driverId').value;
+    const btn = document.getElementById('toggleBtn');
+    const statusText = document.getElementById('status');
+    const inputPin = document.getElementById('pinCode').value;
 
-                    if (!isOnline) {
+    if (!isOnline) {
+        // 🚨 密碼檢查門神：如果密碼不是 8888，就直接攔截！
+        if (inputPin !== "8888") {
+            alert("❌ PIN 碼錯誤！您沒有權限登入司機系統。");
+            return; // 密碼錯了，直接結束，不給連線、不抓 GPS！
+        }
+
+        // 密碼正確才繼續往下走原本的上班流程
                         // 【開啟定位】請求手機瀏覽器允許 GPS 定位權限
                         if (navigator.geolocation) {
                             isOnline = true;
