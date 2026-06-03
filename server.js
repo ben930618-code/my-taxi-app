@@ -236,6 +236,6 @@ io.on('connection', (socket) => {
     });
 });
 
-server.listen(3000, () => {
+server.listen(process.env.PORT || 3000, () => {
     console.log('\n🚀 全球定位版派車大腦已啟動！Port: 3000');
 });
