@@ -219,7 +219,7 @@ io.on('connection', (socket) => {
         if (currentActiveOrder && currentActiveOrder.orderId === data.orderId && !currentActiveOrder.isAccepted) {
             currentActiveOrder.isAccepted = true;
             socket.emit('accept_result', { success: true, lat: currentActiveOrder.lat, lng: currentActiveOrder.lng });
-            io.emit('admin_notification', { status: "SUCCESS", message: `司機 \${data.driverId} 已成功搶單！` });
+            io.emit('admin_notification', { status: "SUCCESS", message: "司機 " + data.driverId + " 已成功搶單！" });
         } else {
             socket.emit('accept_result', { success: false, message: "單已被搶走或已逾時。" });
         }
@@ -230,7 +230,7 @@ io.on('connection', (socket) => {
         for (let id in activeDrivers) {
             if (activeDrivers[id].socketId === socket.id) {
                 delete activeDrivers[id];
-                console.log(`[斷線下線] 司機: \${id}`);
+                console.log("[斷線下線] 司機: " + id);
             }
         }
     });
