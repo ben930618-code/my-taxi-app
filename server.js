@@ -13,18 +13,15 @@ const io = socketIo(server, {
 app.use(express.json());
 
 // ─── 🔑 管理者專屬：司機帳號密碼名冊 ───
-// 格式： '車牌號碼': { name: '司機稱呼', phone: '手機號碼' }
 const driverRegistry = {
     'ABC-1234': { name: '司機01', phone: '0912345678' },
     'XYZ-5678': { name: '司機02', phone: '0987654321' },
     'TAXI-999': { name: '司機03', phone: '0900111222' }
 };
 
-// 儲存動態資料
 let activeDrivers = {}; 
-let driverSchedules = {}; // 儲存各個司機接下的預約行程表
+let driverSchedules = {}; 
 
-// 數學公式：計算兩點直線距離 (公里)
 function getDistance(lat1, lon1, lat2, lon2) {
     const R = 6371;
     const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -34,17 +31,15 @@ function getDistance(lat1, lon1, lat2, lon2) {
     return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))); 
 }
 
-// 🌐 模擬逆向地理編碼：將經緯度轉換成概略市區地址
 function estimateAddress(lat, lng) {
     return "經緯度 (" + lat.toFixed(4) + ", " + lng.toFixed(4) + ") 附近位置";
 }
 
-// 🚦 智慧路況與行車時間估算 (智慧 ETA 演算法)
 function calculateETA(distanceInKm) {
-    const averageSpeedKmh = 35; // 台灣市區平均車速
+    const averageSpeedKmh = 35; 
     let durationMinutes = (distanceInKm / averageSpeedKmh) * 60;
-    durationMinutes += (distanceInKm * 1.5); // 紅綠燈與塞車緩衝權重
-    if (durationMinutes < 3) durationMinutes = 3; // 最少 3 分鐘起跳
+    durationMinutes += (distanceInKm * 1.5); 
+    if (durationMinutes < 3) durationMinutes = 3; 
     return Math.round(durationMinutes);
 }
 
@@ -139,7 +134,7 @@ app.get('/admin', (req, res) => {
                     if(data.status === "FAILED" || data.status === "TIMEOUT") color = "red";
                     if(data.status === "REPLY") color = "#0056b3";
 
-                    logDiv.innerHTML += \`<br><span style="color:\${color}; font-weight:bold;">[\${data.status}] \${data.message}</span>\`;
+                    logDiv.innerHTML += '<br><span style="color:' + color + '; font-weight:bold;">[' + data.status + '] ' + data.message + '</span>';
                 });
             </script>
         </body>
@@ -229,12 +224,12 @@ app.get('/driver', (req, res) => {
                     }
                     let html = "";
                     orders.forEach((ord, index) => {
-                        html += \`<div style="background:#f1f3f5; padding:10px; border-radius:5px; margin-bottom:8px; border-left:4px solid purple;">
-                            <b>任務 \${index+1}. [\${ord.orderType}]</b><br>
-                            預約時間: <span style="color:purple; font-weight:bold;">\${ord.bookingTime}</span><br>
-                            上車點: \${ord.targetAddress}<br>
-                            <button onclick="openNav(\${ord.targetLat}, \${ord.targetLng})" style="margin-top:5px; padding:6px 12px; font-size:13px; background:#007bff; color:white; border:none; border-radius:3px; cursor:pointer; font-weight:bold;">🧭 開啟衛星導航</button>
-                        </div>\`;
+                        html += '<div style="background:#f1f3f5; padding:10px; border-radius:5px; margin-bottom:8px; border-left:4px solid purple;">' +
+                            '<b>任務 ' + (index+1) + '. [' + ord.orderType + ']</b><br>' +
+                            '預約時間: <span style="color:purple; font-weight:bold;">' + ord.bookingTime + '</span><br>' +
+                            '上車點: ' + ord.targetAddress + '<br>' +
+                            '<button onclick="openNav(' + ord.targetLat + ', ' + ord.targetLng + ')" style="margin-top:5px; padding:6px 12px; font-size:13px; background:#007bff; color:white; border:none; border-radius:3px; cursor:pointer; font-weight:bold;">🧭 開啟衛星導航</button>' +
+                        '</div>';
                     });
                     listDiv.innerHTML = html;
                 });
@@ -351,7 +346,6 @@ app.get('/driver', (req, res) => {
                     if(data.success) {
                         requestMySchedule();
                         if(data.orderType === "即時單") {
-                            // 🚀 換成全球最標準、百分之百喚醒手機 App 的 Google Map 官方連結
                             window.location.href = "https://www.google.com/maps/search/?api=1&query=" + data.targetLat + "," + data.targetLng;
                         } else {
                             alert("🎉 預約單搶單成功！已將此單排入您的預約行程表。");
@@ -396,7 +390,7 @@ app.post('/api/dispatch', (req, res) => {
 
     setTimeout(() => {
         if (activeOrders[orderId] && !activeOrders[orderId].isAccepted) {
-            io.emit('admin_notification', { status: "TIMEOUT", message: `地址：\${targetAddress} 的[\${orderType}]派單逾時無人接單。` });
+            io.emit('admin_notification', { status: "TIMEOUT", message: '地址：' + targetAddress + ' 的[' + orderType + ']派單逾時無人接單。' });
             delete activeOrders[orderId];
         }
     }, 120000);
@@ -425,7 +419,6 @@ io.on('connection', (socket) => {
         };
     });
 
-    // 司機主動向大腦索取個人行程表
     socket.on('get_driver_schedule', (data) => {
         const pNum = data.plateNumber;
         const list = driverSchedules[pNum] || [];
@@ -434,7 +427,6 @@ io.on('connection', (socket) => {
 
     socket.on('driver_offline', (data) => {
         delete activeDrivers[data.plateNumber];
-        console.log(`[下線] 車牌: \${data.plateNumber}`);
     });
 
     socket.on('accept_order', (data) => {
@@ -445,26 +437,21 @@ io.on('connection', (socket) => {
         if (ord && !ord.isAccepted) {
             ord.isAccepted = true;
             
-            // 計算司機目前的即時距離與 ETA 路況行車時間
             const rawDist = getDistance(ord.targetLat, ord.targetLng, driverInfo.lat, driverInfo.lng);
             const durationEta = calculateETA(rawDist);
             const driverCurrentAddr = estimateAddress(driverInfo.lat, driverInfo.lng);
 
-            // 如果是預約單，塞進司機的專屬行程表
             if (ord.orderType === "預約單") {
                 if (!driverSchedules[pNum]) driverSchedules[pNum] = [];
                 driverSchedules[pNum].push(ord);
-                // 排序行程表(依時間)
                 driverSchedules[pNum].sort((a,b) => new Date(a.bookingTime) - new Date(b.bookingTime));
             }
 
-            // 回覆司機成功，帶上完整的目標點資料
             socket.emit('accept_result', { success: true, orderType: ord.orderType, targetLat: ord.targetLat, targetLng: ord.targetLng });
             
-            // 🚨 重要！回傳給管理者的完美即時數據報告
-            const adminMsg = "司機 " + driverInfo.name + " (" + pNum + ") 已搶下本單！\\n" +
-                             "📍 司機出發地址: " + driverCurrentAddr + "\\n" +
-                             "📏 直線距離: " + rawDist.toFixed(2) + " 公里\\n" +
+            const adminMsg = "司機 " + driverInfo.name + " (" + pNum + ") 已搶下本單！\n" +
+                             "📍 司機出發地址: " + driverCurrentAddr + "\n" +
+                             "📏 直線距離: " + rawDist.toFixed(2) + " 公里\n" +
                              "🚦 當前路況估計: 車流正常，預計 " + durationEta + " 分鐘後到達乘客上車點！";
             
             io.emit('admin_notification', { status: "SUCCESS", message: adminMsg });
@@ -481,7 +468,7 @@ io.on('connection', (socket) => {
                     delete activeDrivers[pNum];
                 }
             }
-        }, 8000); // 8秒斷線背景寬限
+        }, 8000); 
     });
 });
 
