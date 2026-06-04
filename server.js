@@ -30,7 +30,7 @@ let activeDrivers = {};      // 線上司機狀態
 let globalOrders = [];       // 中央訂單總表
 let creditLedger = [];       // 月結記帳總帳本
 
-// ─── 🧮 數學計算 ───
+// ─── 🧮 數學與導航計算 ───
 function getDistance(lat1, lon1, lat2, lon2) {
     if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
     const R = 6371;
@@ -82,7 +82,7 @@ app.get('/admin', (req, res) => {
         '<div style="display:flex; gap:10px; margin-bottom:12px;"><div style="flex:1;"><label>緯度：</label><input type="number" id="lat" value="24.9936" step="0.0001" class="inp"></div><div style="flex:1;"><label>經度：</label><input type="number" id="lng" value="121.3130" step="0.0001" class="inp"></div></div>',
         '<button onclick="sendOrder()" style="width:100%; padding:12px; background:blue; color:white; border:none; font-size:16px; font-weight:bold; border-radius:5px; cursor:pointer;">建立新訂單</button></div>',
         '<div class="card"><h3>🚖 線上司機動態 (30天/6小時輪班制)</h3><div id="driverStatusDiv">等待資料載入...</div></div>',
-        '<div class="card"><h3>📋 歷史與當前派單總表 (可查閱司機即時動態回報)</h3><div style="overflow-x:auto;"><table><thead><tr><th>類型/時間</th><th>乘客上車點</th><th>擔當司機</th><th>當前狀態/系統備註</th><th>結帳回報</th></tr></thead><tbody id="orderTableBody"></tbody></table></div></div>',
+        '<div class="card"><h3>📋 歷史與當前派單總表</h3><div style="overflow-x:auto;"><table><thead><tr><th>類型/時間</th><th>乘客上車點</th><th>擔當司機</th><th>當前狀態/系統備註</th><th>結帳回報</th></tr></thead><tbody id="orderTableBody"></tbody></table></div></div>',
         '<div class="card"><h3>💵 月結記帳總對帳單</h3><div style="font-size:16px; margin-bottom:10px; color:purple; font-weight:bold;">本月累計記帳總額: <span id="ledgerTotal">0</span> 元</div><div style="overflow-x:auto;"><table><thead><tr><th>結帳時間</th><th>車牌/司機</th><th>客戶名稱</th><th>金額</th></tr></thead><tbody id="ledgerTableBody"></tbody></table></div></div>',
         '<div class="card" style="border: 2px solid #6c757d;"><h3>⚙️ 系統名單與身分設定</h3><div style="display:flex; gap:20px; flex-wrap: wrap;"><div style="flex:1; min-width:240px; background:#f8f9fa; padding:12px; border-radius:6px;"><h4>➕ 新增司機/幹部帳號</h4><input type="text" id="newPlate" placeholder="車牌號碼" style="width:100%; padding:6px; margin-bottom:6px;"><br><input type="text" id="newName" placeholder="姓名" style="width:100%; padding:6px; margin-bottom:6px;"><br><input type="text" id="newPhone" placeholder="手機號碼/密碼" style="width:100%; padding:6px; margin-bottom:6px;"><br><select id="newRole" style="width:100%; padding:6px; margin-bottom:10px;"><option value="driver">一般司機</option><option value="cadre">車隊幹部</option></select><br><button onclick="addDriver()" style="background:green; color:white; border:none; padding:8px 12px; cursor:pointer; font-weight:bold;">確認新增</button><div style="margin-top:10px; font-size:12px; color:gray;" id="registryDriversList"></div></div>',
         '<div style="flex:1; min-width:240px; background:#f8f9fa; padding:12px; border-radius:6px;"><h4>➕ 新增月結客戶</h4><input type="text" id="newClientName" placeholder="客戶公司名稱" style="width:100%; padding:6px; margin-bottom:10px;"><br><button onclick="addClient()" style="background:purple; color:white; border:none; padding:8px 12px; cursor:pointer; font-weight:bold;">確認新增</button><div style="margin-top:10px; font-size:12px; color:gray;" id="registryClientsList"></div></div></div></div>',
@@ -96,7 +96,7 @@ app.get('/admin', (req, res) => {
         'socket.on("admin_update_data", (data) => {',
         '    const drDiv = document.getElementById("driverStatusDiv"); if(data.drivers.length === 0) { drDiv.innerHTML = "<span style=\'color:gray;\'>目前沒有司機上線</span>"; } else { let drHtml = ""; data.drivers.forEach(d => { let isCadre = data.driverRegistry[d.id]?.role === "cadre"; let roleTag = isCadre ? "<b style=\'color:purple;\'>[車隊幹部]</b>" : "[一般司機]"; let dutyBtn = ""; if(isCadre) { if(data.currentDutyPlate === d.id) { dutyBtn = " <span style=\'background:green; color:white; padding:2px 6px; border-radius:3px; font-size:12px;\'>[🟢 當值中]</span>"; } else { dutyBtn = " <button onclick=\\"setDuty(\'" + d.id + "\')\\" style=\'font-size:11px;\'>設為當值(6小時)</button>"; } } let statusBadge = d.isBusy ? "<span style=\'color:red;\'>[🔴 任務中]</span>" : "<span style=\'color:green;\'>[🟢 空車]</span>"; drHtml += "<div style=\'padding:6px 0; border-bottom:1px dashed #eee;\'>🚗 <b>" + d.name + " (" + d.id + ")</b> " + roleTag + " - " + statusBadge + dutyBtn + "</div>"; }); drDiv.innerHTML = drHtml; }',
         '    const oBody = document.getElementById("orderTableBody"); if(data.orders.length === 0) { oBody.innerHTML = "<tr><td colspan=\'5\' style=\'text-align:center; color:gray;\'>暫無派單紀錄</td></tr>"; } else { let oHtml = ""; data.orders.slice().reverse().forEach(o => { let statusStr = `<span class="badge bg-gray">${o.status}</span>`; if(o.status === "等") statusStr = "<span class=\'badge bg-purple\'>⏳ 當值幹部抉擇中(等)</span>"; if(o.status === "讓") statusStr = "<span class=\'badge bg-purple\'>👑 全體幹部優先(讓)</span>"; if(o.status === "丟") statusStr = "<span class=\'badge bg-blue\'>👥 一般司機搶單中(丟)</span>"; if(o.status === "前往迎客") statusStr = `<span class="badge bg-blue">前往迎客 (${o.eta || "?"}分)</span>`; if(o.status === "旅客已上車") statusStr = "<span class=\'badge bg-orange\'>旅客已上車</span>"; if(o.status === "行程已完成") statusStr = "<span class=\'badge bg-green\'>行程已完成</span>"; ',
-        '                    let rTags = ""; if(o.reportedHighSpeed) rTags += " <span style=\'background:red; color:white; font-size:11px; padding:2px 4px; border-radius:3px;\'>⚠️ 司機回報：已上高速</span>"; if(o.reportedWaitingTooLong) rTags += " <span style=\'background:darkorange; color:white; font-size:11px; padding:2px 4px; border-radius:3px;\'>⚠️ 司機回報：等客人太久</span>";',
+        '                    let rTags = ""; if(o.reportedHighSpeed) rTags += " <span style=\'background:red; color:white; font-size:11px; padding:2px 4px; border-radius:3px;\'>⚠️ 已上高速</span>"; if(o.reportedWaitingTooLong) rTags += " <span style=\'background:darkorange; color:white; font-size:11px; padding:2px 4px; border-radius:3px;\'>⚠️ 等客人太久</span>";',
         '                    oHtml += "<tr><td><b>[" + o.serviceType + "]</b><br>" + o.bookingTime + "</td><td>" + o.targetAddress + "</td><td>" + (o.driverName ? o.driverName : "-") + "</td><td>" + statusStr + rTags + "<br><small style=\'color:gray; white-space:pre-wrap;\'>範本備註：<br>" + o.systemNote + "</small></td><td>" + (o.paymentReport || "-") + "</td></tr>"; }); oBody.innerHTML = oHtml; }',
         '    let totalSum = 0; let lHtml = ""; data.ledger.forEach(l => { totalSum += l.amount; lHtml += `<tr><td>${l.time}</td><td>${l.driverId}</td><td><b>${l.clientName}</b></td><td>$${l.amount}</td></tr>`; }); document.getElementById("ledgerTableBody").innerHTML = lHtml || "<tr><td colspan=\'4\' style=\'text-align:center;\'>暫無紀錄</td></tr>"; document.getElementById("ledgerTotal").innerText = totalSum;',
         '    let dList = ""; for(let k in data.driverRegistry) { dList += `• ${k} (${data.driverRegistry[k].name}) [${data.driverRegistry[k].role === "cadre"?"幹部":"司機"}]<br>`; } document.getElementById("registryDriversList").innerHTML = dList;',
@@ -145,12 +145,14 @@ app.get('/driver', (req, res) => {
         '    const listDiv = document.getElementById("scheduleList"); let filterOrders = data.orders.filter(o => { if(["行程已完成", "前往迎客", "旅客已上車"].includes(o.status)) return false; if(o.status === "等") return false; if(myRole === "driver" && o.status === "讓") return false; return true; }); if(filterOrders.length === 0) { listDiv.innerHTML = "暫無開放承接的訂單"; return; } let h = ""; filterOrders.forEach(o => { let takeBtn = `<button class="btn-small btn-green" onclick="clickTakeOrder(\'${o.orderId}\')">立刻手動搶單</button>`; h += `<div style="background:#f1f3f5; padding:8px; border-left:4px solid #007bff; margin-top:5px;"><b>[${o.serviceType}]</b> ${o.targetAddress} (狀態: ${o.status})<br>${takeBtn}</div>`; }); listDiv.innerHTML = h; });',
         'function dutyAction(orderId, action) { socket.emit("duty_cadre_decision", { orderId, action, plateNumber: myPlate, lat: currentLat, lng: currentLng }); }',
         'function clickTakeOrder(orderId) { socket.emit("accept_order", { orderId, plateNumber: myPlate, lat: currentLat, lng: currentLng }); }',
-        'function reportHighway() { if(currentActiveMission) { socket.emit("driver_live_report", { orderId: currentActiveMission.orderId, reportType: "highway" }); alert("已成功向後台通報：已上高速！"); } }',
-        'function reportTooLong() { if(currentActiveMission) { socket.emit("driver_live_report", { orderId: currentActiveMission.orderId, reportType: "waiting_too_long" }); alert("已成功向後台通報：等客人太久！"); } }',
+        'function reportHighway() { if(currentActiveMission) { socket.emit("driver_live_report", { orderId: currentActiveMission.orderId, reportType: "highway" }); } }',
+        'function reportTooLong() { if(currentActiveMission) { socket.emit("driver_live_report", { orderId: currentActiveMission.orderId, reportType: "waiting_too_long" }); } }',
         'socket.on("new_order_request", (data) => { if(currentActiveMission) return; if(data.targetScope === "cadre_only" && myRole !== "cadre") return; document.getElementById("popServiceType").innerText = data.serviceType; document.getElementById("addrText").innerText = data.targetAddress; document.getElementById("popSystemNote").innerText = "內建備註規範：\n" + data.systemNote; document.getElementById("pop").style.display = "block"; document.getElementById("acceptBtn").onclick = function() { socket.emit("accept_order", { orderId: data.orderId, plateNumber: myPlate, lat: currentLat, lng: currentLng }); }; });',
-        'socket.on("accept_result", (data) => { document.getElementById("pop").style.display = "none"; if(data.success) { currentActiveMission = data.order; document.getElementById("status").innerText = "🚖 任務執行中..."; document.getElementById("status").style.color = "blue"; document.getElementById("missionServiceType").innerText = data.order.serviceType; document.getElementById("missionAddr").innerText = data.order.targetAddress; document.getElementById("missionEtaRow").innerText = "⏳ 預計 " + (data.eta || "?") + " 分鐘後抵達"; document.getElementById("missionNoteText").innerText = "規範條款：\n" + data.order.systemNote; document.getElementById("currentMissionSection").style.display = "block"; document.getElementById("step1_board").style.display = "block"; document.getElementById("step2_complete").style.display = "none"; } else { alert(data.message); } socket.emit("get_available_orders"); });',
+        'socket.on("accept_result", (data) => { document.getElementById("pop").style.display = "none"; if(data.success) { currentActiveMission = data.order; document.getElementById("status").innerText = "🚖 任務執行中..."; document.getElementById("status").style.color = "blue"; document.getElementById("missionServiceType").innerText = data.order.serviceType; document.getElementById("missionAddr").innerText = data.order.targetAddress; document.getElementById("missionEtaRow").innerText = "⏳ 預計 " + (data.eta || "?") + " 分鐘後抵達"; document.getElementById("missionNoteText").innerText = "規範條款：\n" + data.order.systemNote; document.getElementById("currentMissionSection").style.display = "block"; document.getElementById("step1_board").style.display = "block"; document.getElementById("step2_complete").style.display = "none";',
+        '        if(data.order.orderType === "即時單") { window.location.href = "https://www.google.com/maps/search/?api=1&query=" + data.order.targetLat + "," + data.order.targetLng; } else { alert("📅 預約單搶單成功！已將此單排入您的預約行程表。"); }',
+        '    } else { alert(data.message); } socket.emit("get_available_orders"); });',
         'function cancelMyOrder() { if(!currentActiveMission) return; if(confirm("確定要取消這筆接單任務嗎？(此單會重新釋回調度池)")) { socket.emit("driver_cancel_order", { orderId: currentActiveMission.orderId, plateNumber: myPlate }); document.getElementById("currentMissionSection").style.display = "none"; currentActiveMission = null; document.getElementById("status").innerText = "🟢 線上空車候客中..."; document.getElementById("status").style.color = "green"; } }',
-        'function clickNav() { if(currentActiveMission) window.open("https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(currentActiveMission.targetAddress), "_blank"); }',
+        'function clickNav() { if(currentActiveMission) window.open("https://www.google.com/maps/search/?api=1&query=" + currentActiveMission.targetLat + "," + currentActiveMission.targetLng, "_blank"); }',
         'function reportBoarded() { socket.emit("driver_report_status", { orderId: currentActiveMission.orderId, status: "旅客已上車", plateNumber: myPlate }); document.getElementById("status").innerText = "🚖 運送服務中..."; document.getElementById("step1_board").style.display = "none"; document.getElementById("step2_complete").style.display = "block"; }',
         'function showCompleteModal() { document.getElementById("completeModal").style.display = "flex"; }',
         'function toggleClientSelect() { document.getElementById("clientSelectDiv").style.display = (document.getElementById("payMethod").value === "記帳") ? "block" : "none"; }',
@@ -165,7 +167,6 @@ app.post('/api/dispatch', (req, res) => {
     const { targetAddress, targetLat, targetLng, orderType, bookingTime, serviceType } = req.body;
     let orderId = "order_" + Date.now();
     
-    // 依據管理者選定的服務類型，注入對應的法規備註
     let note = "";
     if (serviceType === "代駕") {
         note = "代駕\n備註如下\n8內/600,每2//100";
@@ -178,9 +179,9 @@ app.post('/api/dispatch', (req, res) => {
     let newOrder = { 
         orderId, targetAddress, targetLat, targetLng, orderType, bookingTime, serviceType,
         systemNote: note,
-        status: "等", // 新單成立預設狀態為「等」：交由當時段值班幹部抉擇
+        status: "等", 
         driverId: null, driverName: null, paymentReport: null, eta: null,
-        reportedHighSpeed: false, reportedWaitingTooLong: false, // 司機狀況回報燈號
+        reportedHighSpeed: false, reportedWaitingTooLong: false, 
         createdAt: Date.now() 
     };
     
@@ -230,16 +231,14 @@ io.on('connection', (socket) => {
         broadcastAdminData();
     });
 
-    // 👑 核心追加：處理當值幹部的決策命令 (等 / 丟 / 讓)
     socket.on('duty_cadre_decision', (data) => {
         const pNum = data.plateNumber.toUpperCase();
-        if(pNum !== currentDutyPlate) return; // 防呆：不是值班幹部無法操作
+        if(pNum !== currentDutyPlate) return; 
         
         const ord = globalOrders.find(o => o.orderId === data.orderId);
         if(!ord || ord.status !== "等") return;
 
         if (data.action === '接') {
-            // 當值幹部本人直接吃下這筆單
             const realDist = getDistance(ord.targetLat, ord.targetLng, data.lat, data.lng);
             const durationEta = calculateETA(realDist);
             ord.status = "前往迎客";
@@ -250,9 +249,7 @@ io.on('connection', (socket) => {
             socket.emit('accept_result', { success: true, order: ord, eta: durationEta });
         } 
         else if (data.action === '丟') {
-            // 丟：直接解鎖下放，開放給全體一般司機與全體幹部同時搶單
             ord.status = "丟";
-            // 對線上的未忙碌司機推播廣播彈窗
             Object.values(activeDrivers).forEach(driver => {
                 if (!driver.isBusy) {
                     io.to(driver.socketId).emit('new_order_request', { ...ord, targetScope: 'all' });
@@ -260,7 +257,6 @@ io.on('connection', (socket) => {
             });
         } 
         else if (data.action === '讓') {
-            // 讓：優先送給「全體幹部」搶單池
             ord.status = "讓";
             Object.values(activeDrivers).forEach(driver => {
                 let regInfo = driverRegistry[driver.id];
@@ -273,7 +269,6 @@ io.on('connection', (socket) => {
         broadcastAdminData(); broadcastToDrivers();
     });
 
-    // 司機點選搶單
     socket.on('accept_order', (data) => {
         const pNum = data.plateNumber.toUpperCase();
         const driverInfo = activeDrivers[pNum];
@@ -281,7 +276,6 @@ io.on('connection', (socket) => {
 
         if (ord && ["丟", "讓"].includes(ord.status)) {
             let regInfo = driverRegistry[pNum];
-            // 阻擋：如果是普通司機，按到了「讓 (幹部優先池)」，予以拒絕
             if(regInfo.role === 'driver' && ord.status === "讓") {
                 socket.emit('accept_result', { success: false, message: "此單目前由值班幹部設為【幹部優先讓單】，一般司機暫無法承接。" });
                 return;
@@ -301,17 +295,15 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 📣 核心追加：司機即時路況狀況回報監聽器
     socket.on('driver_live_report', (data) => {
         const ord = globalOrders.find(o => o.orderId === data.orderId);
         if(ord) {
             if(data.reportType === 'highway') { ord.reportedHighSpeed = true; }
             if(data.reportType === 'waiting_too_long') { ord.reportedWaitingTooLong = true; }
-            broadcastAdminData(); // 同步重繪後台管理介面
+            broadcastAdminData(); 
         }
     });
 
-    // 司機退單
     socket.on('driver_cancel_order', (data) => {
         const pNum = data.plateNumber.toUpperCase();
         const ord = globalOrders.find(o => o.orderId === data.orderId);
@@ -320,10 +312,9 @@ io.on('connection', (socket) => {
         if(ord && ord.driverId === pNum) {
             if(driverInfo) driverInfo.isBusy = false;
             
-            // 退單後一律重置回「等」狀態，重新交給當時值班幹部重新審查與抉擇
             ord.status = "等";
             ord.driverId = null; ord.driverName = null; ord.eta = null;
-            ord.reportedHighSpeed = false; ord.reportedWaitingTooLong = false; // 清空回報
+            ord.reportedHighSpeed = false; ord.reportedWaitingTooLong = false; 
 
             broadcastAdminData(); broadcastToDrivers();
         }
@@ -370,5 +361,5 @@ io.on('connection', (socket) => {
 });
 
 server.listen(process.env.PORT || 3000, () => {
-    console.log('\n🚀 30天/6h輪班派遣系統 + 載人代購代駕規範 + 司機狀態即時回報系統全面啟動！');
+    console.log('\n🚀 系統重啟成功，前後端運行機制修復完畢！');
 });
