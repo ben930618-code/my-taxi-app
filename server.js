@@ -192,6 +192,19 @@ app.get('/driver', (req, res) => {
                     alert("❌ 登入失敗：" + data.message);\
                     resetToOfflineInfo();\
                 });\
+                socket.on("login_success", () => {\
+                    isOnline = true;\
+                    const btn = document.getElementById("toggleBtn");\
+                    const statusText = document.getElementById("status");\
+                    btn.innerText = "關閉下班 (停止定位)";\
+                    btn.style.background = "red";\
+                    statusText.innerText = "🟢 線上候客中...";\
+                    statusText.style.color = "green";\
+                    document.getElementById("plateNum").disabled = true;\
+                    document.getElementById("phoneNum").disabled = true;\
+                    document.getElementById("scheduleSection").style.display = "block";\
+                    requestMySchedule();\
+                });\
                 socket.on("update_schedule_list", (orders) => {\
                     const listDiv = document.getElementById("scheduleList");\
                     if(!orders || orders.length === 0) {\
@@ -204,7 +217,7 @@ app.get('/driver', (req, res) => {
                             "<b>任務 " + (index+1) + ". [" + ord.orderType + "]</b><br>" +\
                             "預約時間: <span style=\'color:purple; font-weight:bold;\'>" + ord.bookingTime + "</span><br>" +\
                             "上車點: " + ord.targetAddress + "<br>" +\
-                            "<button onclick=\"openTextNav(\'" + encodeURIComponent(ord.targetAddress) + "\')\" style=\'margin-top:5px; padding:6px 12px; font-size:13px; background:#007bff; color:white; border:none; border-radius:3px; cursor:pointer; font-weight:bold;\'>🧭 開啟文字地址導航</button>" +\
+                            "<button onclick=\"openTextNav(\'" + encodeURIComponent(ord.targetAddress) + "\')\" style=\'margin-top:5px; padding:6px 12px; font-size:13px; background:#007bff; color:white; border:none; border-radius:3px; cursor:pointer; font-weight:bold;\'>🧭 開啟地圖導航</button>" +\
                         "</div>";\
                     });\
                     listDiv.innerHTML = html;\
@@ -219,7 +232,7 @@ app.get('/driver', (req, res) => {
                 function sendLocationUpdate() {\
                     const pNum = document.getElementById("plateNum").value.trim();\
                     const pwd = document.getElementById("phoneNum").value.trim();\
-                    if (pNum && currentLat && currentLng) {\
+                    if (pNum && pwd && currentLat && currentLng) {\
                         socket.emit("driver_location_update", { \
                             plateNumber: pNum, \
                             phoneNumber: pwd, \
@@ -231,25 +244,14 @@ app.get('/driver', (req, res) => {
                 function toggleStatus() {\
                     const pNum = document.getElementById("plateNum").value.trim();\
                     const pwd = document.getElementById("phoneNum").value.trim();\
-                    const btn = document.getElementById("toggleBtn");\
-                    const statusText = document.getElementById("status");\
                     if (!pNum || !pwd) { alert("請完整輸入車牌與手機！"); return; }\
                     if (!isOnline) {\
                         if (navigator.geolocation) {\
                             navigator.geolocation.getCurrentPosition((position) => {\
-                                isOnline = true;\
-                                btn.innerText = "關閉下班 (停止定位)";\
-                                btn.style.background = "red";\
-                                statusText.innerText = "🟢 線上候客中...";\
-                                statusText.style.color = "green";\
-                                document.getElementById("plateNum").disabled = true;\
-                                document.getElementById("phoneNum").disabled = true;\
-                                document.getElementById("scheduleSection").style.display = "block";\
                                 currentLat = position.coords.latitude;\
                                 currentLng = position.coords.longitude;\
                                 document.getElementById("gpsDebug").innerText = "目前手機GPS: " + currentLat.toFixed(4) + ", " + currentLng.toFixed(4);\
                                 sendLocationUpdate();\
-                                requestMySchedule();\
                                 watchId = navigator.geolocation.watchPosition((pos) => {\
                                     currentLat = pos.coords.latitude;\
                                     currentLng = pos.coords.longitude;\
@@ -375,6 +377,7 @@ io.on('connection', (socket) => {
             lng: data.lng,
             socketId: socket.id
         };
+        socket.emit('login_success');
     });
 
     socket.on('get_driver_schedule', (data) => {
@@ -408,8 +411,6 @@ io.on('connection', (socket) => {
             socket.emit('accept_result', { 
                 success: true, 
                 orderType: ord.orderType, 
-                targetLat: ord.targetLat, 
-                targetLng: ord.targetLng,
                 targetAddress: ord.targetAddress 
             });
             
@@ -437,5 +438,5 @@ io.on('connection', (socket) => {
 });
 
 server.listen(process.env.PORT || 3000, () => {
-    console.log('\n🚀 文字地址導航標準版大腦已開機！');
+    console.log('\n🚀 門牌導航＋修正登入版大腦已開機！');
 });
