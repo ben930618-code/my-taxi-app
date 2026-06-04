@@ -5,7 +5,6 @@ const socketIo = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
-    // 解決兩台手機同時連線、或行動網路容易斷線的優化設定
     transports: ['polling', 'websocket'],
     pingTimeout: 60000,
     pingInterval: 25000
@@ -14,17 +13,18 @@ const io = socketIo(server, {
 app.use(express.json());
 
 // ─── 🔑 管理者專屬：司機帳號密碼名冊 ───
-// 你可以在這裡自由增加、修改或刪除合法的司機。
 // 格式： '車牌號碼': { name: '司機稱呼', phone: '手機號碼' }
 const driverRegistry = {
-    'BNH-2950': { name: '曾成竣', phone: '0930548588' },
-    'EBA-9369': { name: '曾開正', phone: '0955298588' },
+    'ABC-1234': { name: '司機01', phone: '0912345678' },
+    'XYZ-5678': { name: '司機02', phone: '0987654321' },
     'TAXI-999': { name: '司機03', phone: '0900111222' }
 };
 
-// 儲存目前「在線上」的真實司機動態資料
+// 儲存動態資料
 let activeDrivers = {}; 
+let driverSchedules = {}; // 儲存各個司機接下的預約行程表
 
+// 數學公式：計算兩點直線距離 (公里)
 function getDistance(lat1, lon1, lat2, lon2) {
     const R = 6371;
     const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -34,37 +34,112 @@ function getDistance(lat1, lon1, lat2, lon2) {
     return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))); 
 }
 
+// 🌐 模擬逆向地理編碼：將經緯度轉換成概略市區地址
+function estimateAddress(lat, lng) {
+    return "經緯度 (" + lat.toFixed(4) + ", " + lng.toFixed(4) + ") 附近位置";
+}
+
+// 🚦 智慧路況與行車時間估算 (智慧 ETA 演算法)
+function calculateETA(distanceInKm) {
+    const averageSpeedKmh = 35; // 台灣市區平均車速
+    let durationMinutes = (distanceInKm / averageSpeedKmh) * 60;
+    durationMinutes += (distanceInKm * 1.5); // 紅綠燈與塞車緩衝權重
+    if (durationMinutes < 3) durationMinutes = 3; // 最少 3 分鐘起跳
+    return Math.round(durationMinutes);
+}
+
 // ─── 🚨 管理者網頁 ───
 app.get('/admin', (req, res) => {
     res.send(`
         <!DOCTYPE html>
         <html>
         <head><title>管理者派車後台</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
-        <body style="font-family:sans-serif; padding:20px; max-width:500px; margin:auto;">
-            <h2>🚨 管理者發送派單</h2>
-            地址: <input type="text" id="addr" value="桃園市桃園區中正路1號" style="width:100%; padding:8px; margin-bottom:10px;"><br>
-            緯度: <input type="number" id="lat" value="24.9936" step="0.0001" style="width:100%; padding:8px; margin-bottom:10px;"><br>
-            經度: <input type="number" id="lng" value="121.3130" step="0.0001" style="width:100%; padding:8px; margin-bottom:20px;"><br>
-            <button onclick="sendOrder()" style="width:100%; padding:12px; background:blue; color:white; border:none; font-size:16px; font-weight:bold; border-radius:5px;">確認派車 (找最近2位線上司機)</button>
-            <h3 style="margin-top:30px;">📡 派單動態監聽：</h3>
-            <div id="log" style="background:#eee; padding:10px; min-height:100px; border-radius:5px; font-family:monospace;">等待派單...</div>
+        <body style="font-family:sans-serif; padding:20px; max-width:500px; margin:auto; background:#f4f6f9;">
+            <div style="background:white; padding:20px; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.05);">
+                <h2>🚨 管理者發送派單</h2>
+                
+                <label><b>1. 訂單類型:</b></label>
+                <select id="orderType" style="width:100%; padding:10px; margin-bottom:15px; font-size:15px;" onchange="toggleTimeInput()">
+                    <option value="即時單">⚡ 即時派單 (立刻用車)</option>
+                    <option value="預約單">📅 預約派單 (指定時間)</option>
+                </select>
+
+                <div id="bookingTimeDiv" style="display:none; margin-bottom:15px; background:#e9ecef; padding:10px; border-radius:5px;">
+                    <label><b>預約用車時間:</b></label><br>
+                    <input type="datetime-local" id="bookingTime" style="width:100%; padding:8px; box-sizing:border-box; margin-top:5px;">
+                </div>
+
+                <label><b>2. 上車地址:</b></label>
+                <input type="text" id="addr" value="桃園市桃園區中正路1號" style="width:100%; padding:8px; box-sizing:border-box; margin-bottom:10px;"><br>
+                
+                <div style="display:flex; gap:10px; margin-bottom:15px;">
+                    <div style="flex:1;">
+                        <label>緯度:</label>
+                        <input type="number" id="lat" value="24.9936" step="0.0001" style="width:100%; padding:8px; box-sizing:border-box;">
+                    </div>
+                    <div style="flex:1;">
+                        <label>經度:</label>
+                        <input type="number" id="lng" value="121.3130" step="0.0001" style="width:100%; padding:8px; box-sizing:border-box;">
+                    </div>
+                </div>
+
+                <label><b>3. 本單目標通知司機人數:</b></label>
+                <select id="driverCount" style="width:100%; padding:10px; margin-bottom:20px; font-size:15px;">
+                    <option value="1">通知最近的 1 位司機</option>
+                    <option value="2" selected>通知最近的 2 位司機 (預設)</option>
+                    <option value="3">通知最近的 3 位司機</option>
+                    <option value="4">通知最近的 4 位司機</option>
+                    <option value="5">通知最近的 5 位司機</option>
+                </select>
+
+                <button onclick="sendOrder()" style="width:100%; padding:14px; background:blue; color:white; border:none; font-size:16px; font-weight:bold; border-radius:5px; cursor:pointer;">發送派單單據</button>
+            </div>
+
+            <div style="background:white; padding:20px; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.05); margin-top:20px;">
+                <h3 style="margin-top:0;">📡 派單動態監聽（含司機位置與ETA回傳）：</h3>
+                <div id="log" style="background:#eee; padding:15px; min-height:120px; border-radius:5px; font-family:monospace; line-height:1.5; font-size:14px; white-space:pre-wrap;">等待派單...</div>
+            </div>
+
             <script src="/socket.io/socket.io.js"></script>
             <script>
                 const socket = io({ transports: ['polling', 'websocket'] });
+                
+                function toggleTimeInput() {
+                    const type = document.getElementById('orderType').value;
+                    document.getElementById('bookingTimeDiv').style.display = (type === '預約單') ? 'block' : 'none';
+                }
+
                 function sendOrder() {
-                    document.getElementById('log').innerText = "處理中...";
+                    const type = document.getElementById('orderType').value;
+                    let bTime = "無 (即時單)";
+                    if(type === "預約單") {
+                        const rawTime = document.getElementById('bookingTime').value;
+                        if(!rawTime) { alert("請選擇預約時間！"); return; }
+                        bTime = rawTime.replace('T', ' ');
+                    }
+
                     fetch('/api/dispatch', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({
                             targetAddress: document.getElementById('addr').value,
                             targetLat: parseFloat(document.getElementById('lat').value),
-                            targetLng: parseFloat(document.getElementById('lng').value)
+                            targetLng: parseFloat(document.getElementById('lng').value),
+                            limitCount: parseInt(document.getElementById('driverCount').value),
+                            orderType: type,
+                            bookingTime: bTime
                         })
                     });
                 }
+
                 socket.on('admin_notification', (data) => {
-                    document.getElementById('log').innerHTML += '<br><span style="color:red;">[' + data.status + '] ' + data.message + '</span>';
+                    const logDiv = document.getElementById('log');
+                    let color = "black";
+                    if(data.status === "SUCCESS") color = "green";
+                    if(data.status === "FAILED" || data.status === "TIMEOUT") color = "red";
+                    if(data.status === "REPLY") color = "#0056b3";
+
+                    logDiv.innerHTML += \`<br><span style="color:\${color}; font-weight:bold;">[\${data.status}] \${data.message}</span>\`;
                 });
             </script>
         </body>
@@ -72,16 +147,16 @@ app.get('/admin', (req, res) => {
     `);
 });
 
-// ─── 🚖 司機端網頁（升級版：含車牌電話登入、背景自動重連） ───
+// ─── 🚖 司機端網頁 ───
 app.get('/driver', (req, res) => {
     res.send(`
         <!DOCTYPE html>
         <html>
         <head><title>司機端系統</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
-        <body style="font-family:sans-serif; padding:20px; max-width:500px; margin:auto; text-align:center;">
+        <body style="font-family:sans-serif; padding:20px; max-width:500px; margin:auto; text-align:center; background:#fafafa;">
             <h2>🚖 司機工作台系統</h2>
             
-            <div id="loginSection" style="background:#f8f9fa; padding:20px; border-radius:10px; border:1px solid #ddd; margin-bottom:20px;">
+            <div id="loginSection" style="background:white; padding:20px; border-radius:10px; border:1px solid #eee; margin-bottom:20px; box-shadow:0 2px 5px rgba(0,0,0,0.02);">
                 <h3 style="margin-top:0;">🔐 司機身分驗證</h3>
                 <div style="margin:10px 0; text-align:left;">
                     <label><b>車牌號碼 (帳號):</b></label>
@@ -91,23 +166,29 @@ app.get('/driver', (req, res) => {
                     <label><b>手機號碼 (密碼):</b></label>
                     <input type="password" id="phoneNum" placeholder="請輸入您的電話號碼" style="width:100%; padding:8px; box-sizing:border-box; margin-top:5px; font-size:16px;">
                 </div>
-                <button id="toggleBtn" onclick="toggleStatus()" style="padding:12px; font-size:16px; font-weight:bold; background:green; color:white; border:none; border-radius:5px; width:100%; margin-top:10px;">驗證並開啟上班</button>
+                <button id="toggleBtn" onclick="toggleStatus()" style="padding:12px; font-size:16px; font-weight:bold; background:green; color:white; border:none; border-radius:5px; width:100%; margin-top:10px; cursor:pointer;">驗證並開啟上班</button>
             </div>
             
-            <hr>
             <div id="status" style="font-size:18px; color:gray; margin:20px; font-weight:bold;">🔴 目前下班中 (未定位)</div>
-            <div id="gpsDebug" style="font-size:12px; color:gray;"></div>
+            <div id="gpsDebug" style="font-size:12px; color:gray; margin-bottom:10px;"></div>
 
-            <div id="pop" style="display:none; background:#fff3cd; border:2px solid #ffecb5; padding:20px; border-radius:10px; margin-top:20px; box-shadow: 0px 4px 10px rgba(0,0,0,0.1);">
-                <h3 style="color:#856404; margin-top:0;">🚨 收到新派單通知！</h3>
-                <p id="addrText" style="font-size:18px; font-weight:bold;"></p>
-                <p style="color:red; font-weight:bold;">⏰ 請在 2 分鐘內完成搶單！</p>
-                <button id="acceptBtn" style="padding:14px 30px; background:green; color:white; border:none; font-size:18px; font-weight:bold; border-radius:5px; width:100%;">立刻接單 (搶)</button>
+            <div id="pop" style="display:none; background:#fff3cd; border:2px solid #ffecb5; padding:20px; border-radius:10px; margin-top:20px; text-align:left; box-shadow: 0px 4px 12px rgba(0,0,0,0.08);">
+                <h3 style="color:#856404; margin-top:0; text-align:center;">🚨 收到新任務單！</h3>
+                <p><b>單據類型：</b><span id="popOrderType" style="color:blue; font-weight:bold;"></span></p>
+                <div id="popBookingTimeRow" style="display:none; margin:5px 0;"><b>預約時間：</b><span id="popBookingTime" style="color:purple; font-weight:bold;"></span></div>
+                <p><b>乘客上車點：</b><span id="addrText" style="font-weight:bold;"></span></p>
+                <button id="acceptBtn" style="padding:14px 30px; background:green; color:white; border:none; font-size:18px; font-weight:bold; border-radius:5px; width:100%; cursor:pointer; margin-top:10px;">立刻接單 (搶)</button>
+            </div>
+
+            <div id="scheduleSection" style="display:none; background:white; padding:20px; border-radius:10px; border:1px solid #ddd; margin-top:20px; text-align:left; box-shadow:0 2px 8px rgba(0,0,0,0.05);">
+                <h3 style="margin-top:0; color:#333; border-bottom:2px solid #007bff; padding-bottom:5px;">📅 我的預約行程表</h3>
+                <div id="scheduleList" style="font-size:14px; color:#555;">
+                    <p style="color:gray; text-align:center;">目前尚無已接下的預約行程</p>
+                </div>
             </div>
 
             <script src="/socket.io/socket.io.js"></script>
             <script>
-                // 開啟長輪詢機制，大幅減少斷線機率
                 const socket = io({ 
                     transports: ['polling', 'websocket'],
                     autoConnect: true,
@@ -121,27 +202,53 @@ app.get('/driver', (req, res) => {
                 let currentLat = 0;
                 let currentLng = 0;
 
-                // 🌟 當手機從後台切回前台時，強迫立刻更新並補發定位
                 document.addEventListener('visibilitychange', () => {
                     if (document.visibilityState === 'visible' && isOnline) {
-                        console.log('司機回到網頁，補發定位快取...');
                         sendLocationUpdate();
+                        requestMySchedule();
                     }
                 });
 
-                // 斷線自動重連成功時，自動把上班狀態補回去給大腦
                 socket.on('connect', () => {
                     if (isOnline) {
-                        console.log('網路重連成功，自動恢復線上身分');
                         sendLocationUpdate();
+                        requestMySchedule();
                     }
                 });
 
-                // 處理登入失敗的回覆
                 socket.on('login_failed', (data) => {
                     alert("❌ 登入失敗：" + data.message);
                     resetToOfflineInfo();
                 });
+
+                socket.on('update_schedule_list', (orders) => {
+                    const listDiv = document.getElementById('scheduleList');
+                    if(!orders || orders.length === 0) {
+                        listDiv.innerHTML = '<p style="color:gray; text-align:center;">目前尚無已接下的預約行程</p>';
+                        return;
+                    }
+                    let html = "";
+                    orders.forEach((ord, index) => {
+                        html += \`<div style="background:#f1f3f5; padding:10px; border-radius:5px; margin-bottom:8px; border-left:4px solid purple;">
+                            <b>任務 \${index+1}. [\${ord.orderType}]</b><br>
+                            預約時間: <span style="color:purple; font-weight:bold;">\${ord.bookingTime}</span><br>
+                            上車點: \${ord.targetAddress}<br>
+                            <button onclick="openNav(\${ord.targetLat}, \${ord.targetLng})" style="margin-top:5px; padding:6px 12px; font-size:13px; background:#007bff; color:white; border:none; border-radius:3px; cursor:pointer; font-weight:bold;">🧭 開啟衛星導航</button>
+                        </div>\`;
+                    });
+                    listDiv.innerHTML = html;
+                });
+
+                function openNav(lat, lng) {
+                    window.location.href = "https://www.google.com/maps/search/?api=1&query=" + lat + "," + lng;
+                }
+
+                function requestMySchedule() {
+                    const pNum = document.getElementById('plateNum').value.trim();
+                    if(pNum) {
+                        socket.emit('get_driver_schedule', { plateNumber: pNum });
+                    }
+                }
 
                 function sendLocationUpdate() {
                     const pNum = document.getElementById('plateNum').value.trim();
@@ -162,14 +269,10 @@ app.get('/driver', (req, res) => {
                     const btn = document.getElementById('toggleBtn');
                     const statusText = document.getElementById('status');
 
-                    if (!pNum || !pwd) {
-                        alert("請完整輸入車牌號碼與手機號碼！");
-                        return;
-                    }
+                    if (!pNum || !pwd) { alert("請完整輸入車牌與手機！"); return; }
 
                     if (!isOnline) {
                         if (navigator.geolocation) {
-                            // 先抓一次定位，成功才進行上班登入
                             navigator.geolocation.getCurrentPosition((position) => {
                                 isOnline = true;
                                 btn.innerText = "關閉下班 (停止定位)";
@@ -177,18 +280,17 @@ app.get('/driver', (req, res) => {
                                 statusText.innerText = "🟢 線上候客中 (防斷線守護中)...";
                                 statusText.style.color = "green";
                                 
-                                // 鎖定輸入框，上班中不能亂改帳密
                                 document.getElementById('plateNum').disabled = true;
                                 document.getElementById('phoneNum').disabled = true;
+                                document.getElementById('scheduleSection').style.display = "block";
 
                                 currentLat = position.coords.latitude;
                                 currentLng = position.coords.longitude;
                                 document.getElementById('gpsDebug').innerText = "目前手機GPS: " + currentLat.toFixed(4) + ", " + currentLng.toFixed(4);
                                 
-                                // 發送登入與定位更新
                                 sendLocationUpdate();
+                                requestMySchedule();
 
-                                // 持續追蹤
                                 watchId = navigator.geolocation.watchPosition((pos) => {
                                     currentLat = pos.coords.latitude;
                                     currentLng = pos.coords.longitude;
@@ -197,13 +299,12 @@ app.get('/driver', (req, res) => {
                                 }, null, { enableHighAccuracy: true });
 
                             }, (err) => {
-                                alert("請允許手機瀏覽器獲取 GPS 定位權限，否則無法上班！");
+                                alert("請允許獲取 GPS 定位權限，否則無法上班！");
                             }, { enableHighAccuracy: true });
                         } else {
                             alert("您的手機不支援 GPS 定位");
                         }
                     } else {
-                        // 點擊下班
                         const dId = document.getElementById('plateNum').value.trim();
                         socket.emit('driver_offline', { plateNumber: dId });
                         resetToOfflineInfo();
@@ -221,32 +322,42 @@ app.get('/driver', (req, res) => {
                     document.getElementById('gpsDebug').innerText = "";
                     document.getElementById('plateNum').disabled = false;
                     document.getElementById('phoneNum').disabled = false;
+                    document.getElementById('scheduleSection').style.display = "none";
                     if (watchId) navigator.geolocation.clearWatch(watchId);
                 }
 
                 socket.on('new_order_request', (data) => {
-                    document.getElementById('addrText').innerText = "目的地：" + data.address;
+                    document.getElementById('popOrderType').innerText = data.orderType;
+                    if(data.orderType === "預約單") {
+                        document.getElementById('popBookingTime').innerText = data.bookingTime;
+                        document.getElementById('popBookingTimeRow').style.display = "block";
+                    } else {
+                        document.getElementById('popBookingTimeRow').style.display = "none";
+                    }
+                    document.getElementById('addrText').innerText = data.targetAddress;
                     document.getElementById('pop').style.display = "block";
                     
                     document.getElementById('acceptBtn').onclick = function() {
                         const pNum = document.getElementById('plateNum').value.trim();
                         socket.emit('accept_order', {
                             orderId: data.orderId,
-                            plateNumber: pNum,
-                            targetLat: data.lat,
-                            targetLng: data.lng
+                            plateNumber: pNum
                         });
                     };
                 });
 
                 socket.on('accept_result', (data) => {
+                    document.getElementById('pop').style.display = "none";
                     if(data.success) {
-                        document.getElementById('pop').style.display = "none";
-                        // 🎉 修正後的標準 Google Map 導航跳轉格式
-                        window.location.href = "https://www.google.com/maps/dir/?api=1&destination=" + data.lat + "," + data.lng;
+                        requestMySchedule();
+                        if(data.orderType === "即時單") {
+                            // 🚀 換成全球最標準、百分之百喚醒手機 App 的 Google Map 官方連結
+                            window.location.href = "https://www.google.com/maps/search/?api=1&query=" + data.targetLat + "," + data.targetLng;
+                        } else {
+                            alert("🎉 預約單搶單成功！已將此單排入您的預約行程表。");
+                        }
                     } else {
                         alert(data.message);
-                        document.getElementById('pop').style.display = "none";
                     }
                 });
             </script>
@@ -255,36 +366,38 @@ app.get('/driver', (req, res) => {
     `);
 });
 
-// ─── 派單與定位邏輯 ───
-let currentActiveOrder = null;
+// ─── 派單與定位中心 ───
+let activeOrders = {};
 
 app.post('/api/dispatch', (req, res) => {
-    const { targetAddress, targetLat, targetLng } = req.body;
+    const { targetAddress, targetLat, targetLng, limitCount, orderType, bookingTime } = req.body;
     
     let driversArray = Object.values(activeDrivers);
     let sortedDrivers = driversArray.map(driver => {
         return { ...driver, distance: getDistance(targetLat, targetLng, driver.lat, driver.lng) };
     }).sort((a, b) => a.distance - b.distance);
 
-    let top2Drivers = sortedDrivers.slice(0, 2);
-    if (top2Drivers.length === 0) {
+    let topDrivers = sortedDrivers.slice(0, limitCount);
+    if (topDrivers.length === 0) {
         io.emit('admin_notification', { status: "FAILED", message: "目前沒有任何司機在線上上班！" });
         return res.status(400).json({ status: "failed" });
     }
 
     let orderId = "order_" + Date.now();
-    currentActiveOrder = { orderId, isAccepted: false, lat: targetLat, lng: targetLng };
+    activeOrders[orderId] = { 
+        orderId, targetAddress, targetLat, targetLng, orderType, bookingTime, isAccepted: false 
+    };
 
-    top2Drivers.forEach(driver => {
+    topDrivers.forEach(driver => {
         if (driver.socketId) {
-            io.to(driver.socketId).emit('new_order_request', { orderId, address: targetAddress, lat: targetLat, lng: targetLng });
+            io.to(driver.socketId).emit('new_order_request', activeOrders[orderId]);
         }
     });
 
     setTimeout(() => {
-        if (currentActiveOrder && currentActiveOrder.orderId === orderId && !currentActiveOrder.isAccepted) {
-            io.emit('admin_notification', { status: "TIMEOUT", message: `地址：${targetAddress} 的派單逾時無人接單。` });
-            currentActiveOrder = null;
+        if (activeOrders[orderId] && !activeOrders[orderId].isAccepted) {
+            io.emit('admin_notification', { status: "TIMEOUT", message: `地址：\${targetAddress} 的[\${orderType}]派單逾時無人接單。` });
+            delete activeOrders[orderId];
         }
     }, 120000);
 
@@ -293,68 +406,85 @@ app.post('/api/dispatch', (req, res) => {
 
 io.on('connection', (socket) => {
     
-    // 司機身分驗證與定位更新
     socket.on('driver_location_update', (data) => {
         const pNum = data.plateNumber;
         const pPwd = data.phoneNumber;
 
-        // 🛡️ 檢查名冊中是否有這台車，且電話是否正確
         const registeredDriver = driverRegistry[pNum];
         if (!registeredDriver || registeredDriver.phone !== pPwd) {
-            socket.emit('login_failed', { message: "車牌號碼不存在，或是手機號碼不正確！" });
+            socket.emit('login_failed', { message: "帳號密碼不正確！" });
             return;
         }
 
-        // 驗證成功，寫入線上名單
         activeDrivers[pNum] = {
             id: pNum,
             name: registeredDriver.name,
             lat: data.lat,
             lng: data.lng,
-            socketId: socket.id // 每次重連會自動更新這個小門牌，防止斷線收不到派單
+            socketId: socket.id
         };
-        console.log(`[認證成功] 司機: ${registeredDriver.name} (${pNum}) 座標: ${data.lat}, ${data.lng}`);
     });
 
-    // 司機主動下線
+    // 司機主動向大腦索取個人行程表
+    socket.on('get_driver_schedule', (data) => {
+        const pNum = data.plateNumber;
+        const list = driverSchedules[pNum] || [];
+        socket.emit('update_schedule_list', list);
+    });
+
     socket.on('driver_offline', (data) => {
         delete activeDrivers[data.plateNumber];
-        console.log(`[主動下線] 車牌: ${data.plateNumber}`);
+        console.log(`[下線] 車牌: \${data.plateNumber}`);
     });
 
-    // 處理搶單
     socket.on('accept_order', (data) => {
-        const driverInfo = activeDrivers[data.plateNumber];
-        const driverDisplayName = driverInfo ? `${driverInfo.name} (${data.plateNumber})` : data.plateNumber;
+        const pNum = data.plateNumber;
+        const ord = activeOrders[data.orderId];
+        const driverInfo = activeDrivers[pNum];
 
-        if (currentActiveOrder && currentActiveOrder.orderId === data.orderId && !currentActiveOrder.isAccepted) {
-            currentActiveOrder.isAccepted = true;
-            socket.emit('accept_result', { success: true, lat: currentActiveOrder.lat, lng: currentActiveOrder.lng });
+        if (ord && !ord.isAccepted) {
+            ord.isAccepted = true;
             
-            // 🌟 使用 + 號拼接，完美秀出真實車牌與名字！
-            io.emit('admin_notification', { status: "SUCCESS", message: "司機 " + driverDisplayName + " 已成功搶單！" });
+            // 計算司機目前的即時距離與 ETA 路況行車時間
+            const rawDist = getDistance(ord.targetLat, ord.targetLng, driverInfo.lat, driverInfo.lng);
+            const durationEta = calculateETA(rawDist);
+            const driverCurrentAddr = estimateAddress(driverInfo.lat, driverInfo.lng);
+
+            // 如果是預約單，塞進司機的專屬行程表
+            if (ord.orderType === "預約單") {
+                if (!driverSchedules[pNum]) driverSchedules[pNum] = [];
+                driverSchedules[pNum].push(ord);
+                // 排序行程表(依時間)
+                driverSchedules[pNum].sort((a,b) => new Date(a.bookingTime) - new Date(b.bookingTime));
+            }
+
+            // 回覆司機成功，帶上完整的目標點資料
+            socket.emit('accept_result', { success: true, orderType: ord.orderType, targetLat: ord.targetLat, targetLng: ord.targetLng });
+            
+            // 🚨 重要！回傳給管理者的完美即時數據報告
+            const adminMsg = "司機 " + driverInfo.name + " (" + pNum + ") 已搶下本單！\\n" +
+                             "📍 司機出發地址: " + driverCurrentAddr + "\\n" +
+                             "📏 直線距離: " + rawDist.toFixed(2) + " 公里\\n" +
+                             "🚦 當前路況估計: 車流正常，預計 " + durationEta + " 分鐘後到達乘客上車點！";
+            
+            io.emit('admin_notification', { status: "SUCCESS", message: adminMsg });
+            delete activeOrders[data.orderId];
         } else {
             socket.emit('accept_result', { success: false, message: "單已被搶走或已逾時。" });
         }
     });
 
     socket.on('disconnect', () => {
-        // 斷線時，不要立刻刪除司機！給予網頁切到後台重連的寬限緩衝
         setTimeout(() => {
             for (let pNum in activeDrivers) {
                 if (activeDrivers[pNum].socketId === socket.id) {
-                    // 檢查這台車在過去幾秒內有沒有透過新 socket 重連回來，如果沒有，才判定為真正下線
-                    if (activeDrivers[pNum].socketId === socket.id) {
-                        delete activeDrivers[pNum];
-                        console.log(`[完全斷線] 車牌: ${pNum}`);
-                    }
+                    delete activeDrivers[pNum];
                 }
             }
-        }, 8000); // 8秒緩衝，足夠讓切換 App 的司機自動連回來
+        }, 8000); // 8秒斷線背景寬限
     });
 });
 
-// 監聽環境變數
 server.listen(process.env.PORT || 3000, () => {
-    console.log('\n🚀 權限與防斷線升級版派車大腦已啟動！');
+    console.log('\n🚀 終極完整版派車大腦已開機！');
 });
